@@ -63,7 +63,6 @@ def _boot_patch(app: Any, patch_name: str):
     if hasattr(module, "boot"):
         module.boot(app, BRIDGE)
     elif hasattr(module, "patch"):
-        # Backward compatibility for older startup-style patches.
         module.patch(app)
 
     return module
@@ -106,7 +105,7 @@ def initialize_bus(app: Any, manifest: str) -> None:
 
     marker = (
         "PATCH_BUS_ACTIVE: Startup Patches Loaded | Active: "
-        f"[{','.join(sorted(ACTIVE_PATCHES.keys()))}]"
+        f"[{",".join(sorted(ACTIVE_PATCHES.keys()))}]"
     )
     if marker not in app.extra_instructions:
         app.extra_instructions.append(marker)
@@ -129,7 +128,7 @@ def route(app: Any, patch_name: str, payload: Dict[str, Any] | None = None):
             LOADED_PATCHES[patch_name] = module
 
         if not hasattr(module, "handle"):
-            return f"PATCH_ROUTE_ERROR: '{patch_name}' missing handle(app, payload)"
+            return f"PATCH_ROUTE_ERROR: {patch_name!r} missing handle(app, payload)"
 
         return module.handle(app, payload or {})
     except Exception as e:
@@ -149,7 +148,7 @@ def _legacy_exec(command: str) -> str:
             timeout=15,
         )
         if result.returncode != 0:
-            return f"EXEC_ERROR: {(result.stderr or '').strip()}"
+            return f"EXEC_ERROR: {(result.stderr or "").strip()}"
         return (result.stdout or "").strip() or "Success (No Output)."
     except subprocess.TimeoutExpired:
         return "EXEC_ERROR: Command timed out."

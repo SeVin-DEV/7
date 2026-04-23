@@ -78,7 +78,7 @@ def handle(app: Any, payload: Dict[str, Any] | None = None) -> str:
             return "PATCH_ERROR: Missing command."
         return execute_terminal(str(command))
 
-    return f"PATCH_ERROR: Unsupported action '{action}'."
+    return f"PATCH_ERROR: Unsupported action {action!r}."
 
 
 def patch(app: Any) -> str:
