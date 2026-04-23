@@ -4,59 +4,33 @@ from core.persistence import get_identity_content, load_json, save_json
 from core.manual_manager import audit_tool_specs
 from core.belief_graph import resolve_conflicts, prune_low_value_nodes
 
-
 MAX_CYCLES = 4
 
-
 def parse_tool_call(raw: str):
-    """
-    Parses:
-    USE_TOOL: tool_name | key=value, key2=value2
-
-    Returns:
-        (tool_name: str | None, args: dict)
-    """
+    """Parses: USE_TOOL: tool_name | key=value"""
     try:
         payload = raw.split(":", 1)[1].strip()
-
         if "|" in payload:
             name, arg_str = payload.split("|", 1)
-            args = {}
-
-            for pair in arg_str.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    args[k.strip()] = v.strip()
-
+            args = {k.strip(): v.strip() for pair in arg_str.split(",") if "=" in pair for k, v in [pair.split("=", 1)]}
             return name.strip(), args
-
         return payload.strip(), {}
-
     except Exception:
         return None, {}
 
-
 async def run_cognitive_cycle(app, client, user_input):
     """
-    THE CPU CORE (v4.0)
-
-    Full cognitive lifecycle:
-    - Load state
-    - Maintain beliefs
-    - Think
-    - Decide
-    - Act (tool or shell)
-    - Observe
-    - Repeat (bounded)
-    - Persist
+    THE 26ai COGNITIVE CORE (v5.0)
+    Wired for Oracle Autonomous Database persistence.
     """
-
     try:
-        # === LOAD STATE ===
-        history = load_json("chat_history.json", [])
-        beliefs = load_json("belief_graph.json", {})
-
-        identity = get_identity_content("soul.md")
+        # === LOAD STATE FROM 26ai BRAIN ===
+        # We now pass table names instead of filenames.
+        history = load_json("chat_history", [])
+        beliefs = load_json("belief_graph", {})
+        
+        # 'soul' is the key in our identity_matrix table
+        identity = get_identity_content("soul")
 
         patches = os.getenv("SVN_ACTIVE_PATCHES", "None")
         tools = os.getenv("SVN_ACTIVE_TOOLS", "None")
@@ -69,33 +43,7 @@ async def run_cognitive_cycle(app, client, user_input):
         working_messages = [
             {
                 "role": "system",
-                "content": f"""
-{identity}
-
-[ACTIVE_PATCHES]
-{patches}
-
-[AVAILABLE_TOOLS]
-{tools}
-
-[KNOWN_BELIEFS]
-{json.dumps(beliefs, indent=2)}
-
-[COGNITIVE_PROTOCOL]
-You operate in a loop:
-1. Think about the problem
-2. Decide if action is needed
-3. If needed, choose ONE of:
-   NEED_TOOL: tool_name
-   USE_TOOL: tool_name | key=value
-   EXEC: command
-4. Otherwise, provide the final answer
-
-Rules:
-- Be precise
-- Do not explain when issuing commands
-- Only output ONE command when acting
-"""
+                "content": f"{identity}\n\n[ACTIVE_PATCHES]\n{patches}\n\n[AVAILABLE_TOOLS]\n{tools}\n\n[KNOWN_BELIEFS]\n{json.dumps(beliefs, indent=2)}"
             },
             *history[-6:],
             {"role": "user", "content": user_input}
@@ -106,8 +54,6 @@ Rules:
 
         # === COGNITIVE LOOP ===
         for _ in range(MAX_CYCLES):
-
-            # === THINK ===
             res = client.chat.completions.create(
                 model=os.getenv("MODEL_NAME"),
                 messages=working_messages,
@@ -116,102 +62,42 @@ Rules:
 
             msg = res.choices[0].message.content.strip()
             last_msg = msg
+            working_messages.append({"role": "assistant", "content": msg})
 
-            # Log internal reasoning step
-            working_messages.append({
-                "role": "assistant",
-                "content": msg
-            })
-
-            # === DECISION TREE ===
-
-            # --- TOOL DISCOVERY ---
+            # --- DECISION TREE ---
             if msg.startswith("NEED_TOOL:"):
                 tool_name = msg.split(":", 1)[-1].strip().replace(".py", "")
-
                 manual_data, status = audit_tool_specs(tool_name)
-
-                if status != "SUCCESS" or not manual_data:
+                if status != "SUCCESS":
                     final_answer = f"CPU_HALT: Tool '{tool_name}' unavailable."
                     break
-
-                manual_text = manual_data.get("manual_text", "")
-
-                working_messages.append({
-                    "role": "system",
-                    "content": f"""
-[TOOL_MANUAL:{tool_name}]
-{manual_text}
-
-Construct the correct command.
-Output ONLY one of:
-USE_TOOL: tool_name | key=value
-EXEC: command
-"""
-                })
-
+                working_messages.append({"role": "system", "content": f"[TOOL_MANUAL:{tool_name}]\n{manual_data.get('manual_text', '')}"})
                 continue
 
-            # --- TOOL EXECUTION ---
             elif msg.startswith("USE_TOOL:"):
                 tool_name, args = parse_tool_call(msg)
-
-                if not tool_name:
-                    working_messages.append({
-                        "role": "system",
-                        "content": "[TOOL_ERROR] Invalid tool format."
-                    })
-                    continue
-
-                try:
-                    result = app.route_tool_request(tool_name, args)
-                except Exception as e:
-                    result = f"TOOL_ERROR: {str(e)}"
-
-                working_messages.append({
-                    "role": "system",
-                    "content": f"""
-[TOOL_RESULT:{tool_name}]
-{result}
-"""
-                })
-
+                result = app.route_tool_request(tool_name, args) if tool_name else "TOOL_ERROR"
+                working_messages.append({"role": "system", "content": f"[TOOL_RESULT:{tool_name}]\n{result}"})
                 continue
 
-            # --- SHELL EXECUTION ---
             elif msg.startswith("EXEC:"):
                 command = msg.split(":", 1)[-1].strip()
-
-                try:
-                    result = app.route_exec_request(command)
-                except Exception as e:
-                    result = f"SHELL_ERROR: {str(e)}"
-
-                working_messages.append({
-                    "role": "system",
-                    "content": f"""
-[SHELL_RESULT]
-{result}
-"""
-                })
-
+                result = app.route_exec_request(command)
+                working_messages.append({"role": "system", "content": f"[SHELL_RESULT]\n{result}"})
                 continue
 
-            # --- FINAL RESPONSE ---
             else:
                 final_answer = msg
                 break
 
-        # === FALLBACK ===
         if not final_answer:
-            final_answer = last_msg or "CPU_FALLBACK: No response generated."
+            final_answer = last_msg or "CPU_FALLBACK: No response."
 
-        # === PERSISTENCE ===
-        history.append({"role": "user", "content": user_input})
-        history.append({"role": "assistant", "content": final_answer})
-
-        save_json("chat_history.json", history)
-        save_json("belief_graph.json", beliefs)
+        # === PERSISTENCE TO 26ai ===
+        # persistence.py handles the SQL INSERT logic
+        save_json("chat_history", {"role": "user", "content": user_input})
+        save_json("chat_history", {"role": "assistant", "content": final_answer})
+        save_json("belief_graph", beliefs)
 
         return final_answer, False
 
