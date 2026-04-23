@@ -1,90 +1,68 @@
+import oracledb
+import os
 import json
-from pathlib import Path
-from typing import Any, Iterable
 
-STATE_DIR = Path("state")
-IDENTITY_DIR = Path("identity")
+# --- DB CONNECTION CONFIG ---
+DB_CONFIG = {
+    "user": "ADMIN",
+    "password": "1903313.Cb237527",
+    "dsn": "svnbrain_high",
+    "wallet_path": "/root/wallet",
+    "wallet_pass": "1903313.Cb"
+}
 
-
-def _ensure_dirs() -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_dirs()
-
-
-def _candidate_paths(filename: str, base_dir: Path) -> Iterable[Path]:
-    name_path = Path(filename)
-
-    if name_path.is_absolute():
-        yield name_path
-        return
-
-    # Prefer explicit subdirectories first for 7-1 compatibility.
-    yield base_dir / name_path.name
-
-    # Fall back to the raw relative path for older layouts.
-    if name_path.parent != Path('.'):
-        yield name_path
-
-
-def load_json(filename: str, default: Any):
-    """
-    Load JSON state with a forgiving fallback strategy.
-
-    7-1 passes plain filenames like 'chat_history.json'. This loader stores them
-    under ./state by default, while still tolerating direct relative/absolute
-    paths from older layouts.
-    """
-    _ensure_dirs()
-
-    for path in _candidate_paths(filename, STATE_DIR):
-        if not path.exists():
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except Exception:
-            return default
-
-    return default
-
-
-def save_json(filename: str, data: Any) -> bool:
-    """
-    Persist JSON state to ./state unless an explicit path is provided.
-    Returns bool so callers can treat write success as a signal if desired.
-    """
-    _ensure_dirs()
-
-    name_path = Path(filename)
-    target = name_path if name_path.is_absolute() else STATE_DIR / name_path.name
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    with target.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2, ensure_ascii=False)
-
-    return True
-
-
-def get_identity_content(filename: str) -> str:
-    """
-    Read identity text from ./identity by default.
-
-    If the file does not exist, create a minimal template so first boot can
-    proceed without manual setup.
-    """
-    _ensure_dirs()
-
-    for path in _candidate_paths(filename, IDENTITY_DIR):
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip()
-
-    target = IDENTITY_DIR / Path(filename).name
-    target.write_text(
-        "# soul.md Template\n\n"
-        "Define system identity, tone, rules, or persistent role prompts here.\n",
-        encoding="utf-8",
+def get_brain_connection():
+    """Establishes a secure mTLS connection to the 26ai instance."""
+    return oracledb.connect(
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"],
+        dsn=DB_CONFIG["dsn"],
+        config_dir=DB_CONFIG["wallet_path"],
+        wallet_location=DB_CONFIG["wallet_path"],
+        wallet_password=DB_CONFIG["wallet_pass"]
     )
-    return ""
+
+def get_identity_content(filename="soul.md"):
+    """Fetches core identity from the identity_matrix table."""
+    conn = get_brain_connection()
+    try:
+        with conn.cursor() as cur:
+            key = filename.split(".")[0]
+            cur.execute("SELECT content FROM identity_matrix WHERE identity_key = :1", [key])
+            row = cur.fetchone()
+            return row[0] if row else "# Identity not found in DB"
+    except Exception as e:
+        return f"# DB_ERROR: {str(e)}"
+    finally:
+        conn.close()
+
+def load_json(table_name, default_value=[]):
+    """Queries a DB table instead of a local JSON file."""
+    conn = get_brain_connection()
+    try:
+        table = table_name.split(".")[0]
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT json_data FROM {table} ORDER BY id ASC")
+            rows = cur.fetchall()
+            return [json.loads(row[0]) for row in rows] if rows else default_value
+    except Exception:
+        return default_value
+    finally:
+        conn.close()
+
+def save_json(table_name, data):
+    """Inserts/Appends data into the 26ai brain tables."""
+    conn = get_brain_connection()
+    try:
+        table = table_name.split(".")[0]
+        with conn.cursor() as cur:
+            if isinstance(data, list) and len(data) > 0:
+                payload = data[-1]
+            else:
+                payload = data
+            cur.execute(f"INSERT INTO {table} (json_data) VALUES (:1)", [json.dumps(payload)])
+            conn.commit()
+    except Exception as e:
+        print(f"CRITICAL PERSISTENCE ERROR: {e}")
+    finally:
+        conn.close()
