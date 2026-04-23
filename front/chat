@@ -1,0 +1,16 @@
+#!/bin/sh
+
+PROJECT_DIR="$HOME/7/front"
+
+if [ ! -d "$PROJECT_DIR" ]; then
+  echo "ERROR: Project directory not found: $PROJECT_DIR"
+  exit 1
+fi
+
+if [ ! -f "$PROJECT_DIR/launch_stack.sh" ]; then
+  echo "ERROR: launch_stack.sh not found in $PROJECT_DIR"
+  exit 1
+fi
+
+cd "$PROJECT_DIR" || exit 1
+exec sh launch_stack.sh
